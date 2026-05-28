@@ -1,0 +1,45 @@
+name: RFC Governance Automator
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  repository_dispatch:
+    types: [branch_created, rfc_merged]
+permissions:
+  contents: write
+jobs:
+  manage-rfc:
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+      - name: Process RFC
+        run: |
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            REPO="${{ github.event.client_payload.repo_name }}"
+            ID="${{ github.event.client_payload.rfc_id }}"
+            BRANCH_URL="${{ github.event.client_payload.branch_url }}"
+            PR_URL="${{ github.event.client_payload.pr_url }}"
+            ACTION="branch"
+            [[ "${{ github.event.action }}" == "rfc_merged" ]] && ACTION="merge"
+            if [[ "$ACTION" == "branch" ]]; then
+              zig run .github/scripts/rfc-manager.zig -- "$ACTION" "$ID" "$REPO" "$BRANCH_URL"
+            else
+              zig run .github/scripts/rfc-manager.zig -- "$ACTION" "$ID" "$REPO" "$PR_URL"
+            fi
+          else
+            RFC_FILE=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" | grep -E "^rfcs/[0-9]{4}/00000-.*/RFC.md$" | head -n 1)
+            [[ -z "$RFC_FILE" ]] && exit 0
+            zig run .github/scripts/rfc-manager.zig -- approve "$(dirname "$RFC_FILE")"
+          fi
+      - name: Push
+        run: |
+          git config user.name "vulcan-bot"
+          git config user.email "bot@vulcanic-anvil.org"
+          git add .
+          git diff --cached --quiet || (git commit -m "chore(governance): update rfc [skip ci]" && git push)
